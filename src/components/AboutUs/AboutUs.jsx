@@ -1,5 +1,5 @@
 import React from "react";
-import AboutComponentMini from "../../SubComponents/About";
+import AboutComponentMini from "../../subComponents/About";
 const AboutUs = () => {
   return (
     <section id="aboutPage" className="page">
