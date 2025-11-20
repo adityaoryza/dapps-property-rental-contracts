@@ -1,5 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { ethers } from "ethers";
+import { 
+  WALLET_ERRORS, 
+  ERROR_CODES, 
+  BALANCE_DECIMALS, 
+  ADDRESS_DISPLAY_CONFIG 
+} from "../../constants/web3";
 import "./WalletConnect.css";
 
 const WalletConnect = () => {
@@ -7,32 +13,62 @@ const WalletConnect = () => {
   const [balance, setBalance] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState(null);
+  
+  const providerRef = useRef(null);
 
-  useEffect(() => {
-    checkIfWalletIsConnected();
+  /**
+   * Fetches and updates the ETH balance for a given address
+   * 
+   * @param {string} address
+   * @returns {Promise<void>}
+   */
+  const getBalance = useCallback(async (address) => {
+    try {
+      const provider = providerRef.current;
+      if (!provider) return;
 
-    if (window.ethereum) {
-      window.ethereum.on("accountsChanged", handleAccountsChanged);
-      window.ethereum.on("chainChanged", handleChainChanged);
+      const balanceWei = await provider.getBalance(address);
+      const balanceEth = ethers.formatEther(balanceWei);
+      setBalance(parseFloat(balanceEth).toFixed(BALANCE_DECIMALS));
+    } catch (err) {
+      console.error("Error fetching balance:", err);
+      setError(WALLET_ERRORS.FETCH_BALANCE_FAILED);
     }
-
-    return () => {
-      if (window.ethereum) {
-        window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
-        window.ethereum.removeListener("chainChanged", handleChainChanged);
-      }
-    };
   }, []);
 
-  const checkIfWalletIsConnected = async () => {
+  /**
+   * Handles account changes from the wallet provider
+   * 
+   * @param {string[]} accounts
+   */
+  const handleAccountsChanged = useCallback((accounts) => {
+    if (accounts.length === 0) {
+      disconnectWallet();
+    } else {
+      setWalletAddress(accounts[0]);
+      getBalance(accounts[0]);
+    }
+  }, [getBalance]);
+
+  /**
+   * Handles network/chain changes from the wallet provider
+   */
+  const handleChainChanged = useCallback(() => {
+    setWalletAddress(null);
+    setBalance(null);
+    setError(null);
+  }, []);
+
+  /**
+   * Checks if wallet is already connected on component mount
+   * @returns {Promise<void>}
+   */
+  const checkIfWalletIsConnected = useCallback(async () => {
     try {
-      if (!window.ethereum) {
-        return;
-      }
+      const provider = providerRef.current;
+      if (!provider) return;
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
       const accounts = await provider.listAccounts();
-
       if (accounts.length > 0) {
         const address = accounts[0].address;
         setWalletAddress(address);
@@ -41,85 +77,92 @@ const WalletConnect = () => {
     } catch (err) {
       console.error("Error checking wallet connection:", err);
     }
-  };
+  }, [getBalance]);
 
-  const handleAccountsChanged = (accounts) => {
-    if (accounts.length === 0) {
-      disconnectWallet();
-    } else {
-      setWalletAddress(accounts[0]);
-      getBalance(accounts[0]);
-    }
-  };
-
-  const handleChainChanged = () => {
-    window.location.reload();
-  };
-
-  const getBalance = async (address) => {
-    try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const balanceWei = await provider.getBalance(address);
-      const balanceEth = ethers.formatEther(balanceWei);
-      setBalance(parseFloat(balanceEth).toFixed(4));
-    } catch (err) {
-      console.error("Error fetching balance:", err);
-      setError("Failed to fetch balance");
-    }
-  };
-
+  /**
+   * Initiates wallet connection flow
+   * 
+   * @returns {Promise<void>}
+   */
   const connectWallet = async () => {
     setIsConnecting(true);
     setError(null);
 
     try {
       if (!window.ethereum) {
-        setError("MetaMask is not installed. Please install MetaMask to continue.");
+        setError(WALLET_ERRORS.NO_METAMASK);
         setIsConnecting(false);
         return;
       }
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = providerRef.current;
       const accounts = await provider.send("eth_requestAccounts", []);
+      const address = accounts[0];
 
-      if (accounts.length > 0) {
-        const address = accounts[0];
-        setWalletAddress(address);
-        await getBalance(address);
-      }
+      setWalletAddress(address);
+      await getBalance(address);
     } catch (err) {
       console.error("Error connecting wallet:", err);
-      if (err.code === 4001) {
-        setError("Connection request rejected. Please try again.");
+      
+      if (err.code === ERROR_CODES.USER_REJECTED_REQUEST) {
+        setError(WALLET_ERRORS.USER_REJECTED);
       } else {
-        setError("Failed to connect wallet. Please try again.");
+        setError(WALLET_ERRORS.CONNECTION_FAILED);
       }
     } finally {
       setIsConnecting(false);
     }
   };
 
-  const disconnectWallet = () => {
+  /**
+   * Disconnects wallet and clears all related state
+   */
+  const disconnectWallet = useCallback(() => {
     setWalletAddress(null);
     setBalance(null);
     setError(null);
-  };
+  }, []);
 
+  /**
+   * Formats Ethereum address to shortened display format
+   * 
+   * @param {string} address
+   * @returns {string}
+   */
   const formatAddress = (address) => {
     if (!address) return "";
-    return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+    const { PREFIX_LENGTH, SUFFIX_LENGTH } = ADDRESS_DISPLAY_CONFIG;
+    return `${address.substring(0, PREFIX_LENGTH)}...${address.substring(address.length - SUFFIX_LENGTH)}`;
   };
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.ethereum) {
+      providerRef.current = new ethers.BrowserProvider(window.ethereum);
+
+      window.ethereum.on("accountsChanged", handleAccountsChanged);
+      window.ethereum.on("chainChanged", handleChainChanged);
+
+      checkIfWalletIsConnected();
+    }
+
+    return () => {
+      if (window.ethereum) {
+        window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
+        window.ethereum.removeListener("chainChanged", handleChainChanged);
+      }
+    };
+  }, [handleAccountsChanged, handleChainChanged, checkIfWalletIsConnected]);
 
   return (
     <div className="wallet-connect-container">
       {error && (
-        <div className="wallet-error">
+        <div className="wallet-error" role="alert">
           {error}
         </div>
       )}
 
       {balance && walletAddress && (
-        <div className="wallet-balance">
+        <div className="wallet-balance" aria-label="Wallet balance">
           Balance: {balance} ETH
         </div>
       )}
@@ -128,6 +171,8 @@ const WalletConnect = () => {
         className={`wallet-connect-button ${walletAddress ? "connected" : ""}`}
         onClick={walletAddress ? disconnectWallet : connectWallet}
         disabled={isConnecting}
+        aria-label={walletAddress ? "Disconnect wallet" : "Connect wallet"}
+        type="button"
       >
         {isConnecting
           ? "Connecting..."
